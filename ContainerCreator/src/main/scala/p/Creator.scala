@@ -74,13 +74,13 @@ object Creator extends App {
       val exampleName = s"Example_${traitName}"
       val examplePath = testSystemOutputDir / s"${exampleName}.scala"
       val exampleImpl =
-        st"""// #Sireum
-            |
-            |package ${packageName}
+        st"""package ${packageName}
             |
             |import org.sireum._
             |
-            |@record class ${exampleName} extends ${traitName} {
+            |class ${exampleName}
+            |  extends Object
+            |  with ${traitName} {
             |
             |  override def next(): ${fullyQualifiedName} = {
             |    halt("FYTD")
@@ -89,6 +89,19 @@ object Creator extends App {
             |  override def test(o: ${fullyQualifiedName}): B = {
             |    halt("FYTD")
             |  }
+            |
+            |
+            |  override def string: String = toString
+            |
+            |  override def $$clonable: Boolean = F
+            |
+            |  override def $$clonable_=(b: Boolean): org.sireum.$$internal.MutableMarker = this
+            |
+            |  override def $$owned: Boolean = F
+            |
+            |  override def $$owned_=(b: Boolean): org.sireum.$$internal.MutableMarker = this
+            |
+            |  override def $$clone: org.sireum.$$internal.MutableMarker = this
             |}
             |"""
 
