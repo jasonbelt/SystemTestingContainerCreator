@@ -7,8 +7,11 @@ import org.sireum.lang.symbol.TypeInfo
 import org.sireum.lang.tipe.TypeHierarchy
 import org.sireum.logika.Config
 import org.sireum.logika.Config.StrictPureMode
+import org.sireum.message.Reporter
 
 object Creator extends App {
+
+  val toolName: String = "Creator"
 
   def usage(): Unit = {
     println("Usage: <dir> <slang-file>+")
@@ -28,22 +31,66 @@ object Creator extends App {
     }
 
     val containers: ISZ[String] = ops.ISZOps(args).slice(1, args.size)
+    val reporter = Reporter.create
 
-    return run (projectRoot, containers)
+    val res = run(projectRoot, containers, reporter)
+
+    reporter.printMessages()
+
+    return res + (if (reporter.hasError) 100 else 0)
   }
 
-  def run(projectRoot: Os.Path, containers: ISZ[String]): Z = {
-    val th = getTypeHierachy(projectRoot, containers).get
+  def run(projectRoot: Os.Path, containerUris: ISZ[String], reporter: Reporter): Z = {
+    val thopt = getTypeHierachy(projectRoot)
+    if (thopt.isEmpty) {
+      reporter.error(None(), toolName, s"Couldn't generate a type hierarch from ${projectRoot}")
+      return 1
+    }
 
-    for (container <- containers) {
-      val qname = ops.StringOps(container).split(c => c == '.')
-      val entry = th.typeMap.get(qname).get.asInstanceOf[TypeInfo.Adt]
+    val th = thopt.get
+
+    var fileUris: ISZ[String] = ISZ()
+    for (f <- containerUris) {
+      var cand: Os.Path = Os.path(f)
+      if (!cand.exists) {
+        cand = projectRoot / f
+      }
+      if (cand.exists) {
+        fileUris = fileUris :+ cand.toUri
+      } else {
+        reporter.error(None(), toolName, s"Could not resolve ${f}")
+      }
+    }
+
+    if (reporter.hasError) {
+      return 1
+    }
+
+    var containers: ISZ[TypeInfo.Adt] = ISZ()
+    for (v <- th.typeMap.values) {
+      val temp: TypeInfo = v
+
+      v.posOpt match {
+        case Some(v) if ops.ISZOps(fileUris).contains(v.uriOpt.get) =>
+          if (!temp.isInstanceOf[TypeInfo.Adt]) {
+            reporter.error(temp.posOpt, toolName, s"Only expecting container files to container TypeInfo.Adt, but found ${temp} in ${v.uriOpt.get}")
+          } else {
+            containers = containers :+ temp.asInstanceOf[TypeInfo.Adt]
+          }
+        case _ =>
+      }
+    }
+
+    for (entry <- containers) {
+
+      //val qname = ops.StringOps(container).split(c => c == '.')
+      //val entry = th.typeMap.get(qname).get.asInstanceOf[TypeInfo.Adt]
 
       val packagePath = ops.ISZOps(entry.name).dropRight(1)
       val basePackageName = packagePath(0)
       val packageName = st"${(packagePath, ".")}".render
 
-      val containerFQName = container
+      val containerFQName = st"${(entry.name, ".")}".render
       val jsonName = st"${(ops.ISZOps(entry.name).drop(1), "")}".render
       val simpleContainerName = ops.ISZOps(entry.name).last
 
@@ -85,7 +132,7 @@ object Creator extends App {
             |object ${simpleUtilName} {
             |
             |  def freshRandomLib: RandomLib = {
-            |    return RandomLib(Random.Gen64Impl(Xoshiro256.createSeed(SystemTestsJohn__Container_UtilI.getSeed)))
+            |    return RandomLib(Random.Gen64Impl(Xoshiro256.createSeed(${simpleUtilName}I.getSeed)))
             |  }
             |}
             |
@@ -93,7 +140,9 @@ object Creator extends App {
             |  def getSeed: U64 = $$
             |}
             |"""
-      (testUtilOutputDir /+ packagePath / s"${simpleUtilName}.scala").writeOver(util.render)
+      val t1 = testUtilOutputDir /+ packagePath / s"${simpleUtilName}.scala"
+      t1.writeOver(util.render)
+      reporter.info(None(), toolName, s"Wrote: ${t1}")
 
       val utilI =
         st"""package ${packageName}
@@ -111,8 +160,9 @@ object Creator extends App {
             |  }
             |}
             |"""
-      (testUtilOutputDir /+ packagePath / s"${simpleUtilName}I_Ext.scala").writeOver(utilI.render)
-
+      val t2 = testUtilOutputDir /+ packagePath / s"${simpleUtilName}I_Ext.scala"
+      t2.writeOver(utilI.render)
+      reporter.info(None(), toolName, s"Wrote: ${t2}")
 
       val profilePath = packagePath :+ s"${simpleContainerName}_Profile"
       val profileFQName = st"${(profilePath, ".")}".render
@@ -129,10 +179,19 @@ object Creator extends App {
             |$doNotEdit
             |
             |object ${simpleProfileName} {
+            |
+            |  // a call to next may result in an AssertionError which is an indication that
+            |  // SlangCheck was unable to satisfy a field's filter.  Consider using
+            |  // nextH instead
             |  def next(profile: ${simpleProfileName}): ${simpleContainerName} = {
             |    return ${simpleContainerName} (
             |      ${(nextEntriesViaProfile, ",\n")}
             |    )
+            |  }
+            |
+            |  // nextH will return None() if SlangCheck is unable to satisfy a field's filter
+            |  def nextH(profile: ${simpleProfileName}): Option[${simpleContainerName}] = {
+            |    return ${simpleProfileName}I.next(profile)
             |  }
             |
             |  def getDefaultProfile: ${simpleProfileName} = {
@@ -146,6 +205,10 @@ object Creator extends App {
             |  }
             |}
             |
+            |@ext object ${simpleProfileName}I {
+            |  def next(profile: ${simpleProfileName}): Option[${simpleContainerName}] = $$
+            |}
+            |
             |@record class $simpleProfileName (
             |  var name: String,
             |  var numTests: Z,
@@ -155,8 +218,33 @@ object Creator extends App {
             |)
             |"""
 
-      ((testUtilOutputDir /+ packagePath) / s"${simpleProfileName}.scala" ).writeOver(profiles.render)
+      val t3 = (testUtilOutputDir /+ packagePath) / s"${simpleProfileName}.scala"
+      t3.writeOver(profiles.render)
+      reporter.info(None(), toolName, s"Wrote: ${t3}")
 
+      val profileI =
+        st"""package $packageName
+            |
+            |import org.sireum._
+            |import ${basePackageName}._
+            |
+            |object ${simpleProfileName}I_Ext {
+            |  def next(profile: ${simpleProfileName}): Option[${simpleContainerName}] = {
+            |    try {
+            |      return Some(${simpleContainerName} (
+            |        ${(nextEntriesViaProfile, ",\n")}))
+            |    } catch {
+            |      case e: AssertionError =>
+            |        // SlangCheck was unable to satisfy a datatype's filter
+            |        return None()
+            |    }
+            |  }
+            |}
+            |"""
+
+      val t3_1 = (testUtilOutputDir /+ packagePath) / s"${simpleProfileName}I_Ext.scala"
+      t3_1.writeOver(profileI.render)
+      reporter.info(None(), toolName, s"Wrote: ${t3_1}")
 
       val simpleTraitName = s"${simpleContainerName}_DSC_Test_Harness"
       val harness =
@@ -175,7 +263,7 @@ object Creator extends App {
             |@msig trait $simpleTraitName
             |  extends Random.Gen.TestRunner[${containerFQName}] {
             |
-            |  override def toCompactJson(o: ${container}): String = {
+            |  override def toCompactJson(o: ${containerFQName}): String = {
             |    return ${basePackageName}.JSON.from${jsonName}(o, T)
             |  }
             |
@@ -193,7 +281,9 @@ object Creator extends App {
             |  // override def test(o: ${containerFQName}): B = { }
             |}
             |"""
-      (testUtilOutputDir /+ packagePath / s"${simpleTraitName}.scala").writeOver(harness.render)
+      val t4 = testUtilOutputDir /+ packagePath / s"${simpleTraitName}.scala"
+      t4.writeOver(harness.render)
+      reporter.info(None(), toolName, s"Wrote: ${t4}")
 
       val examplePath = packagePath :+ s"Example_${simpleTraitName}"
       val exampleFQName = st"${(examplePath, ".")}".render
@@ -231,16 +321,17 @@ object Creator extends App {
             |  override def $$clone: org.sireum.$$internal.MutableMarker = this
             |}
             |"""
-
-      (testSystemOutputDir /+ packagePath / s"${simpleExampleName}.scala").writeOver(exampleImpl.render)
+      val t5 = (testSystemOutputDir /+ packagePath / s"${simpleExampleName}.scala")
+      t5.writeOver(exampleImpl.render)
+      reporter.info(None(), toolName, s"Wrote: ${t5}")
     }
 
     return 0
   }
 
-  def getTypeHierachy(projectRoot: Os.Path, containers: _root_.org.sireum.ISZ[String]): Option[TypeHierarchy] = {
+  def getTypeHierachy(projectRoot: Os.Path): Option[TypeHierarchy] = {
     val args = s"proyek slangcheck -p isolette -o ${projectRoot}/src/main/util/isolette ${projectRoot}"
-    val argsx: ISZ[String] = ops.StringOps(args).split(c => c == ' ') ++ containers
+    val argsx: ISZ[String] = ops.StringOps(args).split(c => c == ' ')
 
     val o = Cli('/').parseSireum(argsx, 0).get.asInstanceOf[SireumProyekSlangcheckOption]
 
@@ -251,9 +342,6 @@ object Creator extends App {
       halt(s"${code}")
     }
 
-    if (o.args.size < 2) {
-      halt(st"Unexpected command line arguments: ${(ops.ISZOps(o.args).drop(1), " ")}".render)
-    }
 
     val dm = project.DependencyManager(
       project = prj,
