@@ -25,34 +25,135 @@ object Creator extends App {
       val basePackageName = packagePath(0)
       val packageName = st"${(packagePath, ".")}".render
 
-      val fullyQualifiedName = container
+      val containerFQName = container
       val jsonName = st"${(ops.ISZOps(entry.name).drop(1), "")}".render
-      val simpleName = ops.ISZOps(entry.name).last
+      val simpleContainerName = ops.ISZOps(entry.name).last
 
-      val testUtilOutputDir = projectRoot / "src" / "test" / "util" /+ packagePath
-      val testSystemOutputDir = projectRoot / "src" / "test" / "system" /+ packagePath
+      val testUtilOutputDir = projectRoot / "src" / "test" / "util"
+      val testSystemOutputDir = projectRoot / "src" / "test" / "system"
 
       testUtilOutputDir.mkdirAll()
       testSystemOutputDir.mkdirAll()
 
-      val traitName = s"${simpleName}_DSC_Test_Harness"
+      val utilPath = packagePath :+ s"${simpleContainerName}_Util"
+      val utilName = st"${(utilPath, ".")}".render
+      val simpleUtilName = ops.ISZOps(utilPath).last
+
+      var profileEntries: ISZ[ST] = ISZ()
+      var freshLibs: ISZ[ST] = ISZ()
+      var nextEntriesViaProfile: ISZ[ST] = ISZ()
+      for (v <- entry.vars.entries) {
+        val typ = v._2.typedOpt.get.asInstanceOf[org.sireum.lang.ast.Typed.Name]
+        val nextMethodName = st"next${(ops.ISZOps(typ.ids).drop(1), "")}".render
+
+        freshLibs = freshLibs :+ st"${v._1} = ${simpleUtilName}.freshRandomLib"
+        profileEntries = profileEntries :+ st"var ${v._1} : RandomLib"
+        nextEntriesViaProfile = nextEntriesViaProfile :+ st"${v._1} = profile.${v._1}.${nextMethodName}()"
+      }
+
+
+      val util =
+        st"""// #Sireum
+            |
+            |package ${packageName}
+            |
+            |import org.sireum._
+            |import isolette._
+            |import org.sireum.Random.Impl.Xoshiro256
+            |
+            |object ${simpleUtilName} {
+            |
+            |  def freshRandomLib: RandomLib = {
+            |    return RandomLib(Random.Gen64Impl(Xoshiro256.createSeed(SystemTestsJohn__Container_UtilI.getSeed)))
+            |  }
+            |}
+            |
+            |@ext object ${simpleUtilName}I {
+            |  def getSeed: U64 = $$
+            |}
+            |"""
+      (testUtilOutputDir /+ packagePath / s"${simpleUtilName}.scala").writeOver(util.render)
+
+      val utilI =
+        st"""package ${packageName}
+            |
+            |import org.sireum._
+            |import ${basePackageName}._
+            |
+            |object ${simpleUtilName}I_Ext {
+            |  def getSeed: U64 = {
+            |    val rand = new java.util.Random()
+            |    rand.setSeed(rand.nextLong())
+            |    return U64(rand.nextLong())
+            |  }
+            |}
+            |"""
+      (testUtilOutputDir /+ packagePath / s"${simpleUtilName}I_Ext.scala").writeOver(utilI.render)
+
+
+      val profilePath = packagePath :+ s"${simpleContainerName}_Profile"
+      val profileFQName = st"${(profilePath, ".")}".render
+      val simpleProfileName = ops.ISZOps(profilePath).last
+
+      val profiles =
+        st"""// #Sireum
+            |
+            |package ${packageName}
+            |
+            |import org.sireum._
+            |import ${basePackageName}._
+            |
+            |
+            |object ${simpleProfileName} {
+            |  def next(profile: ${simpleProfileName}): ${simpleContainerName} = {
+            |    return ${simpleContainerName} (
+            |      ${(nextEntriesViaProfile, ",\n")}
+            |    )
+            |  }
+            |
+            |  def getDefaultProfile: ${simpleProfileName} = {
+            |    return ${simpleProfileName} (
+            |      name = "Default ${simpleProfileName} Profile",
+            |      numTests = 100,
+            |      numTestVectorGenRetries = 100,
+            |
+            |      ${(freshLibs, ",\n")}
+            |    )
+            |  }
+            |}
+            |
+            |@record class $simpleProfileName (
+            |  var name: String,
+            |  var numTests: Z,
+            |  var numTestVectorGenRetries: Z,
+            |
+            |  ${(profileEntries, ",\n")}
+            |)
+            |"""
+
+      ((testUtilOutputDir /+ packagePath) / s"${simpleProfileName}.scala" ).writeOver(profiles.render)
+
+
+      val simpleTraitName = s"${simpleContainerName}_DSC_Test_Harness"
       val harness =
         st"""// #Sireum
             |
             |package ${packageName}
             |
             |import org.sireum._
+            |import ${basePackageName}._
+            |import org.sireum.Random.Impl.Xoshiro256
             |
-            |// Distributed SlangCheck Test Harness for ${fullyQualifiedName}
+            |// Distributed SlangCheck Test Harness for ${containerFQName}
             |
-            |@msig trait $traitName
-            |  extends Random.Gen.TestRunner[${fullyQualifiedName}] {
+            |@msig trait $simpleTraitName
+            |  extends Random.Gen.TestRunner[${containerFQName}] {
             |
             |  override def toCompactJson(o: ${container}): String = {
             |    return ${basePackageName}.JSON.from${jsonName}(o, T)
             |  }
             |
-            |  override def fromJson(json: String): ${fullyQualifiedName} = {
+            |  override def fromJson(json: String): ${containerFQName} = {
             |    ${basePackageName}.JSON.to${jsonName}(json) match {
             |      case Either.Left(o) => return o
             |      case Either.Right(msg) => halt(msg.string)
@@ -61,32 +162,31 @@ object Creator extends App {
             |
             |  // you'll need to provide implementations for the following:
             |
-            |  // override def next(): ${fullyQualifiedName} = {}
+            |  // override def next(): ${containerFQName} = {}
             |
-            |  // override def test(o: ${fullyQualifiedName}): B = { }
+            |  // override def test(o: ${containerFQName}): B = { }
             |}
             |"""
+      (testUtilOutputDir /+ packagePath / s"${simpleTraitName}.scala").writeOver(harness.render)
 
-      val harnessPath = testUtilOutputDir / s"${traitName}.scala"
-      harnessPath.writeOver(harness.render)
+      val examplePath = packagePath :+ s"Example_${simpleTraitName}"
+      val exampleFQName = st"${(examplePath, ".")}".render
+      val simpleExampleName = ops.ISZOps(examplePath).last
 
-
-      val exampleName = s"Example_${traitName}"
-      val examplePath = testSystemOutputDir / s"${exampleName}.scala"
       val exampleImpl =
         st"""package ${packageName}
             |
             |import org.sireum._
             |
-            |class ${exampleName}
+            |class ${simpleExampleName}
             |  extends Object
-            |  with ${traitName} {
+            |  with ${simpleTraitName} {
             |
-            |  override def next(): ${fullyQualifiedName} = {
+            |  override def next(): ${containerFQName} = {
             |    halt("FYTD")
             |  }
             |
-            |  override def test(o: ${fullyQualifiedName}): B = {
+            |  override def test(o: ${containerFQName}): B = {
             |    halt("FYTD")
             |  }
             |
@@ -105,7 +205,7 @@ object Creator extends App {
             |}
             |"""
 
-      examplePath.writeOver(exampleImpl.render)
+      (testSystemOutputDir /+ packagePath / s"${simpleExampleName}.scala").writeOver(exampleImpl.render)
     }
 
     return 0
