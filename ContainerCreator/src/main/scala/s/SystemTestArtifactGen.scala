@@ -1,5 +1,5 @@
 // #Sireum
-package p
+package s
 
 import org.sireum.Cli.SireumProyekSlangcheckOption
 import org.sireum._
@@ -9,7 +9,7 @@ import org.sireum.logika.Config
 import org.sireum.logika.Config.StrictPureMode
 import org.sireum.message.Reporter
 
-object Creator extends App {
+object SystemTestArtifactGen extends App {
 
   val toolName: String = "Creator"
 
@@ -246,7 +246,7 @@ object Creator extends App {
       t3_1.writeOver(profileI.render)
       reporter.info(None(), toolName, s"Wrote: ${t3_1}")
 
-      val simpleTraitName = s"${simpleContainerName}_DSC_Test_Harness"
+      val simpleDSCTraitName = s"${simpleContainerName}_DSC_Test_Harness"
       val harness =
         st"""// #Sireum
             |
@@ -260,7 +260,7 @@ object Creator extends App {
             |
             |// Distributed SlangCheck Test Harness for ${containerFQName}
             |
-            |@msig trait $simpleTraitName
+            |@msig trait $simpleDSCTraitName
             |  extends Random.Gen.TestRunner[${containerFQName}] {
             |
             |  override def toCompactJson(o: ${containerFQName}): String = {
@@ -281,32 +281,256 @@ object Creator extends App {
             |  // override def test(o: ${containerFQName}): B = { }
             |}
             |"""
-      val t4 = testUtilOutputDir /+ packagePath / s"${simpleTraitName}.scala"
+      val t4 = testUtilOutputDir /+ packagePath / s"${simpleDSCTraitName}.scala"
       t4.writeOver(harness.render)
       reporter.info(None(), toolName, s"Wrote: ${t4}")
 
-      val examplePath = packagePath :+ s"Example_${simpleTraitName}"
-      val exampleFQName = st"${(examplePath, ".")}".render
-      val simpleExampleName = ops.ISZOps(examplePath).last
 
-      val exampleImpl =
+
+      val slangCheckTraitPath = packagePath :+ s"${simpleContainerName}_SlangCheck"
+      val slangCheckTraitFQName = st"${(slangCheckTraitPath, ".")}".render
+      val simpleSlangCheckTraitName = ops.ISZOps(slangCheckTraitPath).last
+
+      val slangCheckTrait =
+        st"""package ${packageName}
+            |
+            |import org.sireum._
+            |import ${basePackageName}._
+            |
+            |${doNotEdit}
+            |
+            |trait ${simpleSlangCheckTraitName}
+            |  extends SystemTestSuite {
+            |
+            |  case class NameProvider(name: String,
+            |                          function: (Any, Any) => B)
+            |
+            |  case class TestRow(testMethod: NameProvider,
+            |                     profile: ${simpleProfileName},
+            |                     preStateCheck: (Any => B),
+            |                     property: NameProvider)
+            |
+            |  def next(profile: ${simpleProfileName}): Option[${simpleContainerName}] = {
+            |    return ${simpleProfileName}.nextH(profile)
+            |  }
+            |
+            |  def freshRandomLib: RandomLib = {
+            |    return ${simpleUtilName}.freshRandomLib
+            |  }
+            |
+            |  def getProfiles: MSZ[${simpleProfileName}] = {
+            |    return MSZ(getDefaultProfile)
+            |  }
+            |
+            |  //------------------------------------------------
+            |  //  Test Vector Profiles
+            |  //
+            |  //   ..eventually auto-generated from a descriptor
+            |  //     of injection vector
+            |  //------------------------------------------------
+            |
+            |  def getDefaultProfile: ${simpleProfileName} = {
+            |    return ${simpleProfileName}.getDefaultProfile
+            |  }
+            |
+            |  def disableLogsAndGuis(): Unit = {
+            |
+            |    // disable the various guis
+            |    System.setProperty("java.awt.headless", "true")
+            |
+            |    // suppress ART's log stream
+            |    art.ArtNative_Ext.logStream = new java.io.PrintStream(new java.io.OutputStream {
+            |      override def write(b: Int): Unit = {}
+            |    })
+            |
+            |    // suppress the static scheduler's log stream
+            |    art.scheduling.static.StaticSchedulerIO_Ext.logStream = new java.io.PrintStream(new java.io.OutputStream {
+            |      override def write(b: Int): Unit = {}
+            |    })
+            |  }
+            |}
+            |"""
+
+      val t6 = (testUtilOutputDir /+ packagePath / s"${simpleSlangCheckTraitName}.scala")
+      t6.writeOver(slangCheckTrait.render)
+      reporter.info(None(), toolName, s"Wrote: ${t6}")
+
+      val exampleSlangCheckPath = packagePath :+ s"Example_${simpleContainerName}_Test_wSlangCheck"
+      val exampleSlangCheckName = st"${(exampleSlangCheckPath, ".")}".render
+      val simpleExampleSlangCheckName = ops.ISZOps(exampleSlangCheckPath).last
+
+      val exampleSlangCheck =
+        st"""package $packageName
+            |
+            |import org.sireum._
+            |import art.scheduling.static._
+            |import art.Art
+            |import ${basePackageName}._
+            |
+            |
+            |// This file will not be overwritten so is safe to edit
+            |
+            |class ${simpleExampleSlangCheckName}
+            |  extends ${simpleSlangCheckTraitName} {
+            |
+            |  //===========================================================
+            |  //  S c h e d u l a r     and    S t e p p e r     Configuration
+            |  //===========================================================
+            |
+            |  // note: this is overriding SystemTestSuite's 'def scheduler: Scheduler'
+            |  //       abstract method
+            |  //var scheduler: StaticScheduler = Schedulers.getStaticSchedulerH(MNone())
+            |  var scheduler: StaticScheduler = Schedulers.getStaticScheduler(
+            |    Schedulers.defaultStaticSchedule,
+            |    Schedulers.defaultDomainToBridgeIdMap,
+            |    Schedulers.threadNickNames,
+            |    ISZCommandProvider(ISZ()))
+            |
+            |  def compute(isz: ISZ[Command]): Unit = {
+            |    scheduler = scheduler(commandProvider = ISZCommandProvider(isz :+ Stop()))
+            |
+            |    Art.computePhase(scheduler)
+            |  }
+            |
+            |  override def beforeEach(): Unit = {
+            |
+            |    // uncomment the following to disable the various guis and to suppress the log streams
+            |    //disableLogsAndGuis()
+            |
+            |    super.beforeEach()
+            |  }
+            |
+            |  //===========================================================
+            |  //  S l a n g   C h e c k    Infrastructure
+            |  //===========================================================
+            |
+            |  val maxTests = 100
+            |  var verbose: B = T
+            |
+            |  val testMatrix: Map[String, TestRow] = Map.empty ++ ISZ(
+            |    "testFamilyName" ~> TestRow(
+            |      testMethod = NameProvider("Schema-Name", ((input_container: Any, output_container: Any) => T).asInstanceOf[(Any, Any) => B]),
+            |      profile =getDefaultProfile,
+            |      preStateCheck = ((container: Any) => T).asInstanceOf[Any => B],
+            |      property = NameProvider("Property-Name", ((input_container: Any, output_container: Any) => T).asInstanceOf[(Any, Any) => B])
+            |    )
+            |  )
+            |
+            |  for (testRow <- testMatrix.entries) {
+            |    run(testRow._1, testRow._2)
+            |  }
+            |
+            |  def genTestName(testFamilyName: String, testRow: TestRow): String = {
+            |    return s"$${testFamilyName}: $${testRow.testMethod.name}: $${testRow.property.name}: $${testRow.profile.name}"
+            |  }
+            |
+            |  def run(testFamilyName: String, testRow: TestRow): Unit = {
+            |
+            |    for (i <- 0 until maxTests) {
+            |      val testName = s"$${genTestName(testFamilyName, testRow)}_$$i"
+            |      this.registerTest(testName) {
+            |        var retry: B = T
+            |        var j: Z = 0
+            |
+            |        while (j < testRow.profile.numTestVectorGenRetries && retry) {
+            |          if (verbose && j > 0) {
+            |            println(s"Retry $$j:")
+            |          }
+            |
+            |          next(testRow.profile) match {
+            |            case Some(container) =>
+            |              if (!testRow.preStateCheck(container)) {
+            |                // retry
+            |              } else {
+            |                testRow.testMethod.function(container, testRow.property.function)
+            |                retry = F
+            |              }
+            |            case _ =>
+            |          }
+            |          j = j + 1
+            |        }
+            |      }
+            |    }
+            |  }
+            |}"""
+
+      val t7 = (testSystemOutputDir /+ packagePath / s"${simpleExampleSlangCheckName}.scala")
+      t7.writeOver(exampleSlangCheck.render)
+      reporter.info(None(), toolName, s"Wrote: ${t7}")
+
+
+      val exampleDSCPath = packagePath :+ s"Example_${simpleDSCTraitName}"
+      val exampleDSCFQName = st"${(exampleDSCPath, ".")}".render
+      val simpleExampleDSCName = ops.ISZOps(exampleDSCPath).last
+
+      val exampleDSCImpl =
         st"""package ${packageName}
             |
             |import org.sireum._
             |
-            |$doNotEdit
+            |// do not edit, auto-generated by p.Creator
             |
-            |class ${simpleExampleName}
-            |  extends ${simpleTraitName} {
+            |object TestIt_${simpleExampleDSCName} extends App {
+            |
+            |  override def main(args: ISZ[String]): Z = {
+            |    System.setProperty("TEST_FAMILY_NAME", "<key from testMatrix>")
+            |
+            |    val instance = new ${simpleExampleDSCName}()
+            |
+            |    // simulate DSC calling next
+            |    val container = instance.next()
+            |
+            |    // simulate DSC calling test
+            |    val result = instance.test(container)
+            |
+            |    return if(result) 0 else 1
+            |  }
+            |}
+            |
+            |class $simpleExampleDSCName
+            |  extends $simpleExampleSlangCheckName
+            |  with $simpleDSCTraitName {
             |
             |  override def next(): ${containerFQName} = {
-            |    halt("FYTD")
+            |    val testRow = testMatrix.get(getTestId()).get
+            |    return ${simpleProfileName}.next(testRow.profile)
             |  }
             |
             |  override def test(o: ${containerFQName}): B = {
-            |    halt("FYTD")
+            |    val testId = getTestId()
+            |    val testRow = testMatrix.get(testId).get
+            |
+            |    println(genTestName(testId, testRow))
+            |
+            |    disableLogsAndGuis()
+            |
+            |    super.beforeEach()
+            |
+            |    if (!testRow.preStateCheck(o)) {
+            |      println(s"Didn't pass pre state check $${o}")
+            |
+            |      return T
+            |    } else {
+            |
+            |      val result = testRow.testMethod.function(o, testRow.property.function)
+            |
+            |      this.afterEach()
+            |
+            |      return result
+            |    }
             |  }
             |
+            |  def getTestId(): String = {
+            |    Os.prop("TEST_FAMILY_NAME") match {
+            |      case Some(v) => return v
+            |      case _ =>
+            |        Os.env("TEST_FAMILY_NAME") match {
+            |          case Some(v) => return v
+            |          case _ =>
+            |        }
+            |    }
+            |    halt("TEST_FAMILY_NAME not defined")
+            |  }
             |
             |  override def string: String = toString
             |
@@ -321,11 +545,12 @@ object Creator extends App {
             |  override def $$clone: org.sireum.$$internal.MutableMarker = this
             |}
             |"""
-      val t5 = (testSystemOutputDir /+ packagePath / s"${simpleExampleName}.scala")
-      t5.writeOver(exampleImpl.render)
+      val t5 = (testSystemOutputDir /+ packagePath / s"${simpleExampleDSCName}.scala")
+      t5.writeOver(exampleDSCImpl.render)
       reporter.info(None(), toolName, s"Wrote: ${t5}")
-    }
 
+
+    } // end of for loop
     return 0
   }
 
